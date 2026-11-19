@@ -2,11 +2,9 @@ require("dotenv").config({ quiet: true });
 
 const { chromium } = require("playwright");
 const pdfParse = require("pdf-parse");
-const fs = require("fs");
 
 const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || "openrouter/free";
 const FANTASY_LOGIN_URL = process.env.FANTASY_LOGIN_URL || "";
-const MANUAL_PREDICTION_FILE = process.env.MANUAL_PREDICTION_FILE || "";
 const terminalLog = console.log.bind(console);
 const OUTPUT_ONLY_GRID = process.env.OUTPUT_ONLY_GRID !== "0";
 
@@ -20,20 +18,17 @@ const JOLPICA_BASE_URL = "https://api.jolpi.ca/ergast/f1";
 const MAX_GRID_DRIVERS = 22;
 
 const MAX_WEB_SOURCES = 20;
-const MAX_WEB_SOURCE_CHARS = 3600;
-const MAX_WEB_TEXT_PER_SOURCE = 280;
-const MAX_TOTAL_WEB_TEXT = 3200;
+const MAX_WEB_SOURCE_CHARS = 5200;
+const MAX_WEB_TEXT_PER_SOURCE = 520;
+const MAX_TOTAL_WEB_TEXT = 7000;
 const FIA_DOCUMENTS_URL =
   "https://www.fia.com/documents/championships/fia-formula-one-world-championship-14/season/season-2026-2072";
 const MAX_FIA_DOCUMENTS = 10;
-const MAX_FIA_TEXT_PER_DOCUMENT = 700;
-const MAX_TOTAL_FIA_TEXT = 3000;
-const MAX_PROMPT_CHARS =
-  Number(process.env.OPENROUTER_MAX_PROMPT_CHARS) || 40000;
-const SOURCE_ANALYSIS_THRESHOLD = 6500;
-const SOURCE_ANALYSIS_CHUNK_CHARS = 4500;
+const MAX_FIA_TEXT_PER_DOCUMENT = 1100;
+const MAX_TOTAL_FIA_TEXT = 8000;
+const SOURCE_ANALYSIS_THRESHOLD = 9000;
+const SOURCE_ANALYSIS_CHUNK_CHARS = 6500;
 const MAX_SOURCE_ANALYSIS_CHUNKS = 4;
-const MAX_SOURCE_CORPUS_TEXT_PER_SOURCE = 900;
 const SAFETY_CAR_HISTORY_YEARS = 5;
 const LIGHTS_OUT_SAFETY_CAR_CATEGORY_URL =
   "https://www.lightsoutblog.com/category/safety-car-deployments/";
@@ -378,21 +373,6 @@ const CIRCUIT_PROFILES = [
     type: "permanente",
     characteristics: "frenadas fuertes, tracción y degradación alta",
     favours: "coches con buena tracción y buena gestión de neumáticos traseros",
-    overtaking: "alta",
-    degradation: "alta",
-    qualifyingImportance: "media",
-  },
-  {
-    keys: ["sepang", "malaysia", "malasia", "kuala lumpur"],
-    name: "Sepang",
-    raceNameHints: ["Malaysia", "Sepang"],
-    fallbackPoleTime: "1:35.500",
-    slowdownPercent2026: 1.8,
-    type: "permanente",
-    characteristics:
-      "calor y humedad extremos, dos rectas largas, curvas rápidas y riesgo de lluvia tropical",
-    favours:
-      "coches con buena carga en curva rápida, velocidad punta y gestión térmica de neumáticos",
     overtaking: "alta",
     degradation: "alta",
     qualifyingImportance: "media",
@@ -1639,44 +1619,30 @@ async function readWebPage(browser, webSource) {
 
 async function readWebSources() {
   const webSources = getWebSources();
-  const browser = await chromium.launch({ headless: true });
-  const results = new Array(webSources.length).fill(null);
-  let pendingIndexes = webSources.map((_, index) => index);
 
-  while (pendingIndexes.length > 0) {
-    for (const index of pendingIndexes) {
-      const result = await readWebPage(browser, webSources[index]);
+  const browser = await chromium.launch({
+    headless: true,
+  });
 
-      if (result.content && result.content.length > 120) {
-        results[index] = result;
-      } else {
-        console.log(`Web sin contenido: ${webSources[index].url}`);
+  const pages = [];
 
-        if (result.error) {
-          console.log(`Motivo: ${result.error}`);
-        }
+  for (const webSource of webSources) {
+    const result = await readWebPage(browser, webSource);
+
+    if (result.content && result.content.length > 120) {
+      pages.push(result);
+    } else {
+      console.log(`Web ignorada por poco contenido: ${webSource.url}`);
+
+      if (result.error) {
+        console.log(`Motivo: ${result.error}`);
       }
-    }
-
-    const nextPending = pendingIndexes.filter((index) => results[index] === null);
-
-    if (nextPending.length === pendingIndexes.length) {
-      console.log(
-        `${nextPending.length} fuentes siguen sin contenido. Sin progreso, continuando sin ellas.`,
-      );
-      break;
-    }
-
-    pendingIndexes = nextPending;
-
-    if (pendingIndexes.length > 0) {
-      console.log(`\nReintentando ${pendingIndexes.length} fuentes sin contenido...\n`);
     }
   }
 
   await browser.close();
 
-  return results.filter(Boolean);
+  return pages;
 }
 
 function getRaceSearchTerms(circuit, profile, currentRace) {
@@ -1714,15 +1680,6 @@ function isRelevantFiaDocument(link) {
     "competition notes",
     "race directors",
     "race director",
-    "decision",
-    "infringement",
-    "offence",
-    "penalty",
-    "penalised",
-    "penalized",
-    "reprimand",
-    "disqualif",
-    "stewards",
   ];
 
   return relevantKeywords.some((keyword) => text.includes(keyword));
@@ -1818,14 +1775,6 @@ function extractRelevantFiaText(text) {
     "safety car",
     "drs",
     "pit lane",
-    "penalty",
-    "penalised",
-    "penalized",
-    "grid drop",
-    "reprimand",
-    "disqualif",
-    "infringement",
-    "stewards",
   ];
   const clean = String(text || "")
     .replace(/\s+/g, " ")
@@ -1919,261 +1868,7 @@ async function readFiaDocuments(circuit, profile, currentRace) {
   return documents;
 }
 
-function compactWhitespace(value) {
-  return String(value || "").replace(/\s+/g, " ").trim();
-}
-
-function truncateText(value, maxChars) {
-  const text = compactWhitespace(value);
-
-  if (text.length <= maxChars) {
-    return text;
-  }
-
-  return `${text.slice(0, maxChars - 1).trim()}…`;
-}
-
-function splitSentences(value) {
-  return compactWhitespace(value)
-    .split(/(?<=[.!?])\s+/)
-    .map((sentence) => sentence.trim())
-    .filter(Boolean);
-}
-
-function buildSourceKeywords(contextOrCircuit) {
-  const circuit =
-    typeof contextOrCircuit === "string"
-      ? contextOrCircuit
-      : contextOrCircuit?.circuit;
-  const profile =
-    typeof contextOrCircuit === "string" ? null : contextOrCircuit?.profile;
-  const currentRace =
-    typeof contextOrCircuit === "string"
-      ? null
-      : contextOrCircuit?.currentRace;
-
-  return [
-    circuit,
-    profile?.name,
-    currentRace?.raceName,
-    "McLaren",
-    "Ferrari",
-    "Mercedes",
-    "Red Bull",
-    "Williams",
-    "Aston Martin",
-    "Alpine",
-    "Haas",
-    "Racing Bulls",
-    "Sauber",
-    "Verstappen",
-    "Norris",
-    "Piastri",
-    "Leclerc",
-    "Hamilton",
-    "Russell",
-    "Antonelli",
-    "Alonso",
-    "Sainz",
-    "pole",
-    "qualifying",
-    "race pace",
-    "practice",
-    "FP1",
-    "FP2",
-    "FP3",
-    "sprint",
-    "degradation",
-    "tyres",
-    "strategy",
-    "upgrade",
-    "updates",
-    "package",
-    "floor",
-    "front wing",
-    "rear wing",
-    "power unit",
-    "long run",
-    "weather",
-    "rain",
-    "safety car",
-    "retirement",
-    "reliability",
-    "mejora",
-    "mejoras",
-    "paquete",
-    "suelo",
-    "alerón",
-    "lluvia",
-    "ritmo",
-    "clasificación",
-    "neumáticos",
-    "penalty",
-    "penalised",
-    "penalized",
-    "grid drop",
-    "grid penalty",
-    "reprimand",
-    "disqualified",
-    "disqualification",
-    "infringement",
-    "stewards",
-    "back of the grid",
-    "pit lane start",
-    "penalización",
-    "penalizado",
-    "sanción",
-    "sancionado",
-    "descalificado",
-    "amonestación",
-  ]
-    .filter(Boolean)
-    .map((keyword) => normalizeText(keyword));
-}
-
-const HIGH_VALUE_SOURCE_KEYWORDS = new Set(
-  [
-    "upgrade",
-    "updates",
-    "package",
-    "floor",
-    "front wing",
-    "rear wing",
-    "power unit",
-    "weather",
-    "rain",
-    "safety car",
-    "mejora",
-    "mejoras",
-    "paquete",
-    "suelo",
-    "alerón",
-    "lluvia",
-    "ritmo",
-    "penalty",
-    "grid penalty",
-    "grid drop",
-    "disqualified",
-    "penalización",
-    "sanción",
-  ].map((keyword) => normalizeText(keyword)),
-);
-
-function scoreSentence(sentence, keywords) {
-  const normalizedSentence = normalizeText(sentence);
-
-  return keywords.reduce((score, keyword) => {
-    if (!keyword || !normalizedSentence.includes(keyword)) {
-      return score;
-    }
-
-    if (HIGH_VALUE_SOURCE_KEYWORDS.has(keyword)) {
-      return score + 3;
-    }
-
-    return score + 1;
-  }, 0);
-}
-
-function extractRelevantSentences(text, contextOrCircuit, maxChars, maxSentences = 4) {
-  const sentences = splitSentences(text);
-
-  if (!sentences.length) {
-    return "";
-  }
-
-  const keywords = buildSourceKeywords(contextOrCircuit);
-  const used = new Set();
-  const ranked = sentences
-    .map((sentence, index) => ({
-      sentence,
-      index,
-      score: scoreSentence(sentence, keywords),
-    }))
-    .filter((item) => item.score > 0)
-    .sort((a, b) => b.score - a.score || a.index - b.index);
-  const selected = [];
-
-  const candidates = ranked.length
-    ? ranked
-    : sentences.map((sentence, index) => ({ sentence, index }));
-
-  for (const item of candidates) {
-    const normalized = normalizeText(item.sentence).slice(0, 180);
-
-    if (used.has(normalized)) {
-      continue;
-    }
-
-    used.add(normalized);
-    selected.push(item.sentence);
-
-    if (selected.length >= maxSentences) {
-      break;
-    }
-  }
-
-  return truncateText(selected.join(" "), maxChars);
-}
-
-function compactPromptForOpenRouter(prompt) {
-  return String(prompt || "")
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .join("\n");
-}
-
-const SHRINKABLE_PROMPT_PREFIXES = [
-  "Noticias web=",
-  "PDFs FIA=",
-  "Análisis previo de fuentes=",
-  "Mejoras por equipo=",
-  "Carreras recientes=",
-  "Poles recientes=",
-];
-
-function reducePromptToLimit(prompt, maxChars) {
-  let text = String(prompt || "");
-
-  if (text.length <= maxChars) {
-    return text;
-  }
-
-  const minCharsPerSection = 200;
-  const lines = text.split("\n");
-
-  for (let pass = 0; pass < 12 && text.length > maxChars; pass++) {
-    const excess = text.length - maxChars;
-    const candidates = lines
-      .map((line, index) => ({ line, index }))
-      .filter(({ line }) =>
-        SHRINKABLE_PROMPT_PREFIXES.some((prefix) => line.startsWith(prefix)),
-      )
-      .sort((a, b) => b.line.length - a.line.length);
-
-    if (!candidates.length) {
-      break;
-    }
-
-    const target = candidates[0];
-    const newLength = Math.max(
-      minCharsPerSection,
-      target.line.length - excess,
-    );
-
-    if (newLength >= target.line.length) {
-      break;
-    }
-
-    lines[target.index] = truncateText(target.line, newLength);
-    text = lines.join("\n");
-  }
-
-  return text;
-}
-
-function buildFiaDocumentsText(fiaDocuments, context = null) {
+function buildFiaDocumentsText(fiaDocuments) {
   const readableDocuments = (fiaDocuments || []).filter(
     (document) => document.text,
   );
@@ -2184,137 +1879,25 @@ function buildFiaDocumentsText(fiaDocuments, context = null) {
 
   return readableDocuments
     .map(
-      (document, index) =>
-        `${index + 1}. ${document.title}: ${extractRelevantSentences(
-          document.text,
-          context || document.title,
-          MAX_FIA_TEXT_PER_DOCUMENT,
-          4,
-        )}`,
+      (document, index) => `${index + 1}. ${document.title}: ${document.text}`,
     )
     .join(" | ")
     .slice(0, MAX_TOTAL_FIA_TEXT);
 }
 
-const UPGRADE_TEAMS = [
-  "McLaren",
-  "Ferrari",
-  "Mercedes",
-  "Red Bull",
-  "Williams",
-  "Aston Martin",
-  "Alpine",
-  "Haas",
-  "Racing Bulls",
-  "Sauber",
-];
-
-const UPGRADE_COMPONENT_KEYWORDS = [
-  "floor",
-  "diffuser",
-  "front wing",
-  "rear wing",
-  "beam wing",
-  "sidepod",
-  "engine cover",
-  "cooling",
-  "brake duct",
-  "suspension",
-  "nose",
-  "bodywork",
-  "mirror",
-  "power unit",
-];
-
-const UPGRADE_REASON_KEYWORDS = [
-  ["circuit specific", "específica para este circuito"],
-  ["performance", "busca rendimiento"],
-  ["reliability", "fiabilidad"],
-  ["drag", "reducción de drag"],
-  ["downforce", "carga aerodinámica"],
-];
-
-function extractFiaCarPresentationUpgrades(fiaDocuments) {
-  const presentationDocuments = (fiaDocuments || []).filter(
-    (document) =>
-      document.text && /car (presentation|display)/i.test(document.title || ""),
-  );
-  const findings = [];
-
-  for (const document of presentationDocuments) {
-    const normalizedText = normalizeText(
-      String(document.text).replace(/\s+/g, " "),
-    );
-    const occurrences = [];
-
-    for (const team of UPGRADE_TEAMS) {
-      const normalizedTeam = normalizeText(team);
-      let searchIndex = 0;
-
-      while (true) {
-        const teamIndex = normalizedText.indexOf(normalizedTeam, searchIndex);
-
-        if (teamIndex === -1) {
-          break;
-        }
-
-        occurrences.push({ team, index: teamIndex });
-        searchIndex = teamIndex + normalizedTeam.length;
-      }
-    }
-
-    occurrences.sort((a, b) => a.index - b.index);
-
-    const componentsByTeam = new Map();
-    const reasonsByTeam = new Map();
-
-    occurrences.forEach((occurrence, position) => {
-      const nextIndex = occurrences[position + 1]?.index ?? Infinity;
-      const windowEnd = Math.min(occurrence.index + 450, nextIndex);
-      const windowText = normalizedText.slice(occurrence.index, windowEnd);
-      const components =
-        componentsByTeam.get(occurrence.team) || new Set();
-      const reasons = reasonsByTeam.get(occurrence.team) || new Set();
-
-      for (const component of UPGRADE_COMPONENT_KEYWORDS) {
-        if (windowText.includes(component)) {
-          components.add(component);
-        }
-      }
-
-      for (const [keyword, label] of UPGRADE_REASON_KEYWORDS) {
-        if (windowText.includes(keyword)) {
-          reasons.add(label);
-        }
-      }
-
-      componentsByTeam.set(occurrence.team, components);
-      reasonsByTeam.set(occurrence.team, reasons);
-    });
-
-    for (const team of UPGRADE_TEAMS) {
-      const components = componentsByTeam.get(team);
-
-      if (!components || !components.size) {
-        continue;
-      }
-
-      const reasons = reasonsByTeam.get(team) || new Set();
-      const reasonText = reasons.size
-        ? `; motivo: ${[...reasons].join(", ")}`
-        : "";
-
-      findings.push(
-        `${team} (FIA car presentation): piezas actualizadas: ${[...components].join(", ")}${reasonText}`,
-      );
-    }
-  }
-
-  return findings;
-}
-
 function buildTeamUpgradeText(fiaDocuments, webPages) {
-  const teams = UPGRADE_TEAMS;
+  const teams = [
+    "McLaren",
+    "Ferrari",
+    "Mercedes",
+    "Red Bull",
+    "Williams",
+    "Aston Martin",
+    "Alpine",
+    "Haas",
+    "Racing Bulls",
+    "Sauber",
+  ];
   const upgradeKeywords = [
     "upgrade",
     "upgrades",
@@ -2351,16 +1934,9 @@ function buildTeamUpgradeText(fiaDocuments, webPages) {
       text: page.content,
     })),
   ];
-  const findings = extractFiaCarPresentationUpgrades(fiaDocuments);
-  const teamsWithFiaFindings = new Set(
-    findings.map((finding) => finding.split(" (")[0]),
-  );
+  const findings = [];
 
   for (const team of teams) {
-    if (teamsWithFiaFindings.has(team)) {
-      continue;
-    }
-
     const normalizedTeam = normalizeText(team);
 
     for (const source of sources) {
@@ -2391,7 +1967,7 @@ function buildTeamUpgradeText(fiaDocuments, webPages) {
     return "No se han detectado mejoras claras por equipo en PDFs FIA/noticias; no inventes mejoras.";
   }
 
-  return findings.join(" | ").slice(0, 2400);
+  return findings.join(" | ").slice(0, 1800);
 }
 
 function buildSourceCorpus(context) {
@@ -2399,24 +1975,11 @@ function buildSourceCorpus(context) {
     .filter((document) => document.text)
     .map(
       (document, index) =>
-        `FIA ${index + 1} - ${document.title}\n${extractRelevantSentences(
-          document.text,
-          context,
-          MAX_SOURCE_CORPUS_TEXT_PER_SOURCE,
-          6,
-        )}`,
+        `FIA ${index + 1} - ${document.title}\n${document.text}`,
     )
     .join("\n\n");
   const webText = (context.webPages || [])
-    .map(
-      (page, index) =>
-        `WEB ${index + 1} - ${page.source}\n${extractRelevantSentences(
-          page.content,
-          context,
-          MAX_SOURCE_CORPUS_TEXT_PER_SOURCE,
-          6,
-        )}`,
-    )
+    .map((page, index) => `WEB ${index + 1} - ${page.source}\n${page.content}`)
     .join("\n\n");
 
   return [fiaText, webText].filter(Boolean).join("\n\n");
@@ -2473,13 +2036,6 @@ function buildSourceAnalysesText(sourceAnalyses) {
 }
 
 async function analyzeSourceChunks(context) {
-  if (process.env.SKIP_SOURCE_ANALYSIS === "1") {
-    console.log(
-      "\nAnálisis previo de fuentes desactivado (SKIP_SOURCE_ANALYSIS=1); se ahorra esa cuota de OpenRouter.\n",
-    );
-    return [];
-  }
-
   const corpus = buildSourceCorpus(context);
 
   if (corpus.length <= SOURCE_ANALYSIS_THRESHOLD) {
@@ -2490,16 +2046,14 @@ async function analyzeSourceChunks(context) {
     0,
     MAX_SOURCE_ANALYSIS_CHUNKS,
   );
-  const analyses = new Array(chunks.length).fill(null);
-  let pendingIndexes = chunks.map((_, index) => index);
+  const analyses = [];
 
   console.log(
     `\nContexto de fuentes grande (${corpus.length} caracteres). Analizando en ${chunks.length} peticiones previas a OpenRouter...\n`,
   );
 
-  while (pendingIndexes.length > 0) {
-    for (const index of pendingIndexes) {
-      const prompt = `
+  for (let index = 0; index < chunks.length; index++) {
+    const prompt = `
 Analiza este lote de fuentes de F1 para el GP ${context.currentRace?.raceName || context.circuit}.
 Busca SOLO señales útiles para predecir la carrera: mejoras por equipo, ritmo reciente, problemas de fiabilidad, neumáticos, clima, power unit y cualquier cambio técnico.
 Responde SOLO JSON válido:
@@ -2513,32 +2067,10 @@ Fuentes lote ${index + 1}/${chunks.length}:
 ${chunks[index]}
 `;
 
-      const response = await askOpenRouter(prompt);
-      const parsed = extractJson(response);
+    const response = await askOpenRouter(prompt);
+    const parsed = extractJson(response);
 
-      if (parsed !== null) {
-        analyses[index] = parsed;
-      } else {
-        console.log(
-          `Análisis ${index + 1}/${chunks.length} devolvió JSON inválido. Se reintentará.`,
-        );
-      }
-    }
-
-    const nextPending = pendingIndexes.filter((index) => analyses[index] === null);
-
-    if (nextPending.length === pendingIndexes.length) {
-      for (const index of nextPending) {
-        analyses[index] = "No se pudo analizar este lote tras varios intentos.";
-      }
-      break;
-    }
-
-    pendingIndexes = nextPending;
-
-    if (pendingIndexes.length > 0) {
-      console.log(`\nReintentando ${pendingIndexes.length} análisis sin resultado...\n`);
-    }
+    analyses.push(parsed || response.slice(0, 1200));
   }
 
   console.log("Análisis previo de fuentes completado.\n");
@@ -2547,7 +2079,88 @@ ${chunks[index]}
 }
 
 function extractRelevantWebText(text, circuit) {
-  return extractRelevantSentences(text, circuit, MAX_WEB_TEXT_PER_SOURCE, 2);
+  const cleanCircuit = normalizeCircuit(circuit);
+
+  const keywords = [
+    cleanCircuit,
+    "Miami",
+    "McLaren",
+    "Mercedes",
+    "Ferrari",
+    "Red Bull",
+    "Verstappen",
+    "Norris",
+    "Piastri",
+    "Leclerc",
+    "Hamilton",
+    "Russell",
+    "Antonelli",
+    "Alonso",
+    "Sainz",
+    "pole",
+    "qualifying",
+    "classification",
+    "race pace",
+    "practice",
+    "FP1",
+    "FP2",
+    "FP3",
+    "sprint",
+    "standings",
+    "constructors",
+    "drivers",
+    "degradation",
+    "tyres",
+    "strategy",
+    "upgrade",
+    "updates",
+    "upgrades",
+    "development",
+    "aero",
+    "floor",
+    "front wing",
+    "rear wing",
+    "new package",
+    "long run",
+    "one-lap pace",
+    "race simulation",
+    "weather",
+    "rain",
+    "wet",
+    "dry",
+    "safety car",
+    "retirement",
+    "reliability",
+    "set-up",
+    "setup",
+    "mejora",
+    "mejoras",
+    "evolución",
+    "paquete",
+    "lluvia",
+    "ritmo",
+    "clasificación",
+    "neumáticos",
+    "race",
+    "points",
+  ];
+
+  const sentences = String(text || "")
+    .split(/[.!?]/)
+    .map((sentence) => sentence.trim())
+    .filter(Boolean);
+
+  const relevant = sentences.filter((sentence) =>
+    keywords.some((keyword) =>
+      sentence.toLowerCase().includes(keyword.toLowerCase()),
+    ),
+  );
+
+  const selected = relevant.length
+    ? relevant.slice(0, 2)
+    : sentences.slice(0, 2);
+
+  return selected.join(". ").slice(0, MAX_WEB_TEXT_PER_SOURCE);
 }
 
 function buildWebText(webPages, circuit) {
@@ -2597,20 +2210,6 @@ function buildFallbackTop10FromStandings(driverStandings) {
     team: item.team,
     confidence: Math.max(35, 60 - index * 3),
     reason: "Fallback basado en rendimiento general estimado de equipos.",
-  }));
-}
-
-function buildLastRaceTop10(recentRaceResults) {
-  if (!Array.isArray(recentRaceResults) || !recentRaceResults.length) {
-    return [];
-  }
-
-  const lastRace = recentRaceResults[recentRaceResults.length - 1];
-
-  return (lastRace.Results || []).slice(0, 10).map((result, index) => ({
-    position: index + 1,
-    driver: getDriverName(result.Driver),
-    team: result.Constructor?.name || "",
   }));
 }
 
@@ -3236,148 +2835,6 @@ function sanitizePoleTime(value, context) {
   return formatFantasyPoleTime(formatMsToLapTime(correctedMs));
 }
 
-const CONFIRMED_GRID_PENALTY_PHRASES = [
-  "grid penalty",
-  "grid-penalty",
-  "back of the grid",
-  "rear of the grid",
-  "start from the back",
-  "pit lane start",
-  "start from the pit lane",
-  "penalizacion de parrilla",
-  "sancion de parrilla",
-  "sale desde el fondo",
-  "saldra ultimo",
-  "saldra desde el fondo",
-  "penalizado con",
-];
-
-function detectConfirmedBackOfGridPenalties(context) {
-  const texts = [
-    ...(context.webPages || []).map((page) => page.content),
-    ...(context.fiaDocuments || []).map((document) => document.text),
-  ].filter(Boolean);
-
-  if (!texts.length) {
-    return [];
-  }
-
-  const knownDrivers = new Set();
-
-  (context.driverStandings || []).forEach(
-    (item) => item.driver && knownDrivers.add(item.driver),
-  );
-  (context.fantasyDrivers || []).forEach(
-    (name) => name && knownDrivers.add(name),
-  );
-
-  const normalizedPhrases = CONFIRMED_GRID_PENALTY_PHRASES.map(normalizeText);
-  const penalizedDrivers = [];
-  const seen = new Set();
-
-  for (const rawText of texts) {
-    const normalizedText = normalizeText(rawText);
-
-    for (const driverName of knownDrivers) {
-      const normalizedDriver = normalizeText(driverName);
-
-      if (!normalizedDriver || seen.has(normalizedDriver)) {
-        continue;
-      }
-
-      // Las noticias casi siempre usan solo el apellido (p.ej. "Antonelli"),
-      // no el nombre completo oficial ("Andrea Kimi Antonelli"), así que
-      // buscamos por apellido con límites de palabra.
-      const nameParts = normalizedDriver.split(" ").filter(Boolean);
-      const surname = nameParts[nameParts.length - 1];
-
-      if (!surname || surname.length < 3) {
-        continue;
-      }
-
-      let searchIndex = 0;
-
-      while (true) {
-        const driverIndex = normalizedText.indexOf(surname, searchIndex);
-
-        if (driverIndex === -1) {
-          break;
-        }
-
-        searchIndex = driverIndex + surname.length;
-
-        const charBefore = normalizedText[driverIndex - 1];
-        const charAfter = normalizedText[driverIndex + surname.length];
-        const isWordBoundaryBefore = !charBefore || !/[a-z0-9]/.test(charBefore);
-        const isWordBoundaryAfter = !charAfter || !/[a-z0-9]/.test(charAfter);
-
-        if (!isWordBoundaryBefore || !isWordBoundaryAfter) {
-          continue;
-        }
-
-        const windowStart = Math.max(0, driverIndex - 200);
-        const windowEnd = Math.min(
-          normalizedText.length,
-          driverIndex + surname.length + 200,
-        );
-        const window = normalizedText.slice(windowStart, windowEnd);
-
-        if (normalizedPhrases.some((phrase) => window.includes(phrase))) {
-          seen.add(normalizedDriver);
-          penalizedDrivers.push(driverName);
-          break;
-        }
-      }
-    }
-  }
-
-  return penalizedDrivers;
-}
-
-function applyConfirmedGridPenalties(startingGridPrediction, context, warnings) {
-  const penalizedDrivers = detectConfirmedBackOfGridPenalties(context);
-
-  if (!penalizedDrivers.length) {
-    return startingGridPrediction;
-  }
-
-  const normalizedPenalized = new Set(
-    penalizedDrivers.map((driver) => normalizeDriverName(driver)),
-  );
-  const tailSlice = startingGridPrediction.slice(
-    -penalizedDrivers.length,
-  );
-  const alreadyAtBack =
-    tailSlice.length === penalizedDrivers.length &&
-    tailSlice.every((item) =>
-      normalizedPenalized.has(normalizeDriverName(item.driver)),
-    );
-
-  if (alreadyAtBack) {
-    return startingGridPrediction;
-  }
-
-  const kept = startingGridPrediction.filter(
-    (item) => !normalizedPenalized.has(normalizeDriverName(item.driver)),
-  );
-  const moved = startingGridPrediction.filter((item) =>
-    normalizedPenalized.has(normalizeDriverName(item.driver)),
-  );
-
-  warnings.push(
-    `Parrilla corregida: ${moved
-      .map((item) => item.driver)
-      .join(
-        ", ",
-      )} tiene penalización de parrilla confirmada en las fuentes (motor/caja de cambios/sanción); se ha movido al fondo de la parrilla aunque OpenRouter lo situó más arriba.`,
-  );
-
-  return [...kept, ...moved].map((item, index) => ({
-    ...item,
-    position: index + 1,
-  }));
-}
-
 function getPredictionDate(rawPrediction) {
   const rawDate = String(rawPrediction?.fecha || "").trim();
 
@@ -3426,21 +2883,11 @@ function buildFantasyPrediction(rawPrediction, context) {
     );
   }
 
-  if (isSameDriverOrder(top10, buildLastRaceTop10(context.recentRaceResults))) {
-    warnings.push(
-      "OpenRouter devolvió el mismo orden que la última carrera disputada; el script no lo modificó.",
-    );
-  }
-
-  const rawStartingGridPrediction = buildStartingGridPrediction(
+  const startingGridPrediction = buildStartingGridPrediction(
     rawPrediction,
     fullRacePrediction,
     context,
   );
-  // A manual prediction already includes confirmed grid penalties.
-  const startingGridPrediction = MANUAL_PREDICTION_FILE
-    ? rawStartingGridPrediction
-    : applyConfirmedGridPenalties(rawStartingGridPrediction, context, warnings);
   const teamLeader = computeTeamWithMostPoints(top10);
   const podium = getRawPodium(rawPrediction, top10);
   const poleDriver = getRawDriver(
@@ -3798,14 +3245,6 @@ function buildBaselineText(driverStandings) {
 
 async function askOpenRouter(prompt) {
   const apiKey = process.env.OPENROUTER_API_KEY;
-  const rawCompactPrompt = compactPromptForOpenRouter(prompt);
-  const compactPrompt = reducePromptToLimit(rawCompactPrompt, MAX_PROMPT_CHARS);
-
-  if (compactPrompt.length < rawCompactPrompt.length) {
-    console.log(
-      `Prompt recortado para no superar el límite: ${rawCompactPrompt.length} -> ${compactPrompt.length} caracteres (máximo ${MAX_PROMPT_CHARS}).`,
-    );
-  }
 
   if (!apiKey) {
     throw new Error("Falta OPENROUTER_API_KEY en el archivo .env");
@@ -3820,7 +3259,7 @@ async function askOpenRouter(prompt) {
     console.log("\nLlamando a OpenRouter...");
     console.log(`Modelo: ${OPENROUTER_MODEL}`);
     console.log(`Intento: ${attempt}/${maxAttempts}`);
-    console.log(`Tamaño prompt: ${compactPrompt.length} caracteres`);
+    console.log(`Tamaño prompt: ${prompt.length} caracteres`);
     console.log(`Max tokens: ${maxTokens}`);
 
     const response = await fetch(
@@ -3843,7 +3282,7 @@ async function askOpenRouter(prompt) {
             },
             {
               role: "user",
-              content: compactPrompt,
+              content: prompt,
             },
           ],
           temperature: 0.35,
@@ -3861,26 +3300,11 @@ async function askOpenRouter(prompt) {
       console.log("RESPUESTA RAW DE OPENROUTER:");
       console.log(rawText);
 
-      if (response.status === 429) {
-        if (rawText.includes("free-models-per-day")) {
-          const resetMs = Number(
-            rawText.match(/"X-RateLimit-Reset":"(\d+)"/)?.[1],
-          );
-          const resetText = Number.isFinite(resetMs)
-            ? ` La cuota se resetea el ${new Date(resetMs).toLocaleString("es-ES")}.`
-            : "";
-
-          throw new Error(
-            `Cuota diaria gratuita de OpenRouter agotada (free-models-per-day).${resetText} Opciones: esperar al reseteo, añadir 10 créditos en openrouter.ai para ampliar a 1000 peticiones/día, o usar otro modelo de pago con OPENROUTER_MODEL.`,
-          );
-        }
-
-        if (attempt < maxAttempts) {
-          const waitMs = attempt * 3000;
-          console.log(`Rate limit. Reintentando en ${waitMs / 1000}s...`);
-          await sleep(waitMs);
-          continue;
-        }
+      if (response.status === 429 && attempt < maxAttempts) {
+        const waitMs = attempt * 3000;
+        console.log(`Rate limit. Reintentando en ${waitMs / 1000}s...`);
+        await sleep(waitMs);
+        continue;
       }
 
       throw new Error("Error llamando a OpenRouter");
@@ -4090,22 +3514,20 @@ function buildPrompt(context) {
 Predice F1 ${CURRENT_SEASON} ${circuit}. Responde SOLO JSON válido.
 
 Instrucciones de análisis:
-- Tu tarea es estimar el resultado probable de ESTA carrera concreta, con sus características especiales. Cada GP es distinto: está PROHIBIDO devolver como resultado la clasificación actual del campeonato o el orden de llegada de la última carrera; ambos son datos de entrada, no la respuesta.
-- Método obligatorio para construir la predicción, en este orden:
-  1. Analiza el perfil de ESTE circuito (tipo, características, facilidad de adelantamiento, degradación, importancia de qualy) y decide qué cualidades del coche premia: eficiencia aerodinámica, carga, tracción, velocidad punta, gestión de neumáticos, frenada, fiabilidad y ritmo de carrera.
-  2. Puntúa cada equipo según lo bien que su coche encaja en ese perfil, usando los datos reales de F1 disponibles: poles recientes, ritmo de las últimas carreras y comportamiento en circuitos de características parecidas.
-  3. Ajusta por mejoras reales detectadas en los PDFs FIA y las noticias web: suelo, alerones, refrigeración, suspensión, power unit, piezas de baja/alta carga o paquetes aerodinámicos. Una mejora útil para el perfil de este circuito debe cambiar el orden previsto; una mejora irrelevante para este circuito no.
-  4. Ajusta por condiciones específicas de este GP: clima previsto, probabilidad de Safety Car, estrategia, degradación de neumáticos y forma reciente de cada piloto.
-  5. Solo entonces construye "ordenPilotosPuntos" con todos los pilotos ordenados por posición final prevista. Debe ser una estimación propia de este GP: puede coincidir en parte con el campeonato si el rendimiento lo justifica, pero nunca ser una copia del campeonato ni de la última carrera.
+- Tu tarea es estimar el resultado probable de ESTA carrera, no repetir la clasificación actual del campeonato.
+- Construye "ordenPilotosPuntos" como predicción completa de carrera de todos los pilotos. No uses la clasificación general ni los puntos del campeonato como orden base.
+- Ordena primero por rendimiento esperado del coche en ESTE circuito: eficiencia aerodinámica, carga, tracción, velocidad punta, gestión de neumáticos, degradación, fiabilidad y ritmo de carrera.
+- Después ajusta por actualizaciones reales detectadas en FIA/noticias: suelo, alerones, refrigeración, suspensión, power unit, piezas de baja/alta carga o paquetes aerodinámicos. Una mejora útil para el perfil del circuito debe cambiar el orden previsto.
+- Después ajusta por tipo de circuito y condiciones: facilidad de adelantamiento, importancia de qualy/parrilla, clima, probabilidad de Safety Car, estrategia y forma reciente del piloto.
 - Usa los puntos del campeonato solo como referencia débil de nivel general cuando falten señales de rendimiento, nunca para reconstruir el top 10.
 - Ponderación obligatoria para "ordenPilotosPuntos": 35% adaptación del coche al circuito, 25% ritmo reciente de carrera y clasificación, 20% actualizaciones/mejoras aplicables, 10% degradación/neumáticos/estrategia, 10% forma del piloto/fiabilidad/clima.
-- Usa "Última carrera" solo como señal de evolución reciente: quién convirtió bien la parrilla en resultado, quién tuvo mejor ritmo de carrera y qué equipos progresan. NUNCA copies su orden de llegada como predicción; aquel resultado dependió de otro circuito, otra estrategia y otros incidentes.
+- Da mucho peso a "Última carrera": úsala para detectar evolución reciente de equipos y pilotos, quién convirtió bien la parrilla en resultado, quién tuvo mejor ritmo de carrera y qué equipos sumaron más puntos.
 - Da mucho peso a "PDFs FIA" y "Noticias web" para detectar mejoras reales: si un equipo trae paquete aerodinámico, suelo, alerón, refrigeración, motor o cambios de neumáticos que puedan mejorar rendimiento, refléjalo en pole, top 10, escudería ganadora y ritmo.
-- Revisa específicamente "Mejoras por equipo". Las entradas marcadas "FIA car presentation" salen del documento oficial de la FIA con las piezas nuevas declaradas por cada equipo para ESTE GP: son la evidencia más fiable de mejoras. Estima el efecto de cada pieza según el circuito (suelo/alerones/carga ayudan en circuitos lentos y técnicos; reducción de drag y power unit en circuitos rápidos; refrigeración en calor; "específica para este circuito" indica adaptación deliberada al trazado) y sube/baja el rendimiento previsto del equipo en consecuencia. No inventes mejoras si ese bloque dice que no hay evidencia.
+- Revisa específicamente "Mejoras por equipo". Si un equipo aparece con mejoras o paquete nuevo, estima si esas piezas ayudan al tipo de circuito actual y sube/baja su rendimiento en consecuencia. No inventes mejoras si ese bloque dice que no hay evidencia.
 - Pondera cada mejora según el tipo de circuito. En Mónaco o circuitos urbanos lentos importa mucho más clasificación, carga aerodinámica, tracción, suspensión mecánica y confianza del piloto; el motor y la velocidad punta pesan poco. En Monza, Bakú, Canadá, Spa o circuitos de rectas largas, motor, eficiencia, drag, velocidad punta y frenada pesan mucho más. En circuitos técnicos como Barcelona, Suzuka o Qatar pesan carga eficiente, equilibrio y degradación.
 - Si existe "Análisis previo de fuentes", úsalo como comparación entre lotes de fuentes: prioriza señales repetidas o coherentes entre varios lotes y evita copiar una única noticia aislada si contradice el resto.
-- "Referencia de fuerza de pilotos" no está ordenada por clasificación; úsala solo para saber nivel general. No reconstruyas una clasificación de campeonato con ella. Si tu top 10 queda casi igual al campeonato, reházlo antes de responder usando señales de rendimiento, mejoras, circuito y clima.
-- Antes de devolver el JSON, compara mentalmente tu top 10 con dos listas: la clasificación general del campeonato y el orden de llegada de la última carrera. Si coincide casi literal con cualquiera de las dos, es inválido: reházlo dando prioridad a rendimiento del coche en este circuito, actualizaciones y condiciones específicas de este GP.
+- "Referencia de fuerza de pilotos" no está ordenada por clasificación; úsala solo para saber nivel general. No reconstruyas una clasificación de campeonato con ella. Si tu top 10 queda casi igual al campeonato, reházlo antes de responder usando última carrera, mejoras, circuito y clima.
+- Antes de devolver el JSON, compara mentalmente tu top 10 con la clasificación general del campeonato. Si coincide casi literal, es inválido: reházlo dando prioridad a rendimiento del coche, actualizaciones y tipo de circuito.
 - Debe haber una justificación implícita de circuito: por ejemplo, en circuitos urbanos pesa más clasificación/tracción; en circuitos rápidos pesa más eficiencia y velocidad punta; con lluvia pesa más pilotaje, errores, Safety Cars y variabilidad.
 - Puedes mantener pilotos fuertes arriba si tiene sentido, pero el orden final debe reflejar una estimación específica del GP, no una tabla de puntos.
 - Para "tiempoPole", usa obligatoriamente "Comparativa poles": ahí están las poles de cada GP ya disputado en ${PREVIOUS_SEASON} y ${CURRENT_SEASON}, con su diferencia. Calcula la media de esas diferencias y aplícala a la pole ${PREVIOUS_SEASON} de este circuito.
@@ -4116,7 +3538,6 @@ Instrucciones de análisis:
 - Revisa en las noticias web si algún equipo ha traído mejoras, evoluciones o paquetes nuevos para esta carrera o las carreras recientes, y tenlo en cuenta al valorar rendimiento, pole, ganador y top 10.
 - Revisa los PDFs FIA del evento. Si aparece un documento de car presentation/display, technical/scrutineering, power unit o Pirelli, úsalo para detectar piezas nuevas, paquetes aerodinámicos, cambios de motor, neumáticos y condiciones específicas de la carrera.
 - Analiza la previsión meteorológica del día de la carrera en el circuito. Si hay lluvia o alta probabilidad de lluvia, ajusta pole, top 10, Safety Cars, abandonos y piloto con más adelantamientos. Si la previsión es seca, no inventes lluvia.
-- Revisa "PDFs FIA" y "Noticias web" en busca de penalizaciones ya confirmadas para este GP: sanciones de parrilla por cambio de motor/power unit, caja de cambios, componentes, sanciones de comisarios deportivos arrastradas de la carrera anterior, o pilotos que saldrán desde el pit lane. Si detectas una penalización confirmada, aplica la caída de posiciones al piloto afectado en "previsionParrillaSalida" (no lo pongas en la posición que le correspondería solo por ritmo/clasificación) y recalcula el resto de la parrilla en consecuencia; si el piloto tiene ritmo de carrera fuerte, refleja su remontada en "previsionCarreraCompleta" y considéralo candidato a "pilotoMasPuestosGanados". No inventes penalizaciones si no hay evidencia clara en las fuentes.
 - Genera "previsionParrillaSalida" como listado simple de ${MAX_GRID_DRIVERS} pilotos ordenados por estimación real de la parrilla de carrera/salida para este GP. Debe contener SOLO pilotos, nunca equipos, escuderías ni textos combinados.
 - Genera "previsionCarreraCompleta" con esos mismos pilotos ordenados por posición final prevista de carrera. No inventes un límite fijo: usa la lista real de "Pilotos disponibles para prevision completa".
 - En cada objeto, "piloto.nombre" debe ser únicamente el nombre del piloto, por ejemplo "Kimi Antonelli". No pongas "Mercedes", "Ferrari", "McLaren", nombres de equipo, ni textos tipo "Kimi Antonelli Mercedes".
@@ -4159,9 +3580,9 @@ Poles recientes=${buildRecentPolesText(recentPoles)}
 Comparativa poles ${CURRENT_SEASON} vs ${PREVIOUS_SEASON}=${buildPoleTrendText(poleTrend)}
 Clima previsto=${buildWeatherText(weatherForecast)}
 Histórico parones SC/VSC mismo GP/circuito últimos ${SAFETY_CAR_HISTORY_YEARS} años=${buildSafetyCarHistoryText(safetyCarHistory)}
-PDFs FIA=${buildFiaDocumentsText(fiaDocuments, context)}
+PDFs FIA=${buildFiaDocumentsText(fiaDocuments)}
 Mejoras por equipo=${buildTeamUpgradeText(fiaDocuments, webPages)}
-Noticias web=${buildWebText(webPages, context)}
+Noticias web=${buildWebText(webPages, circuit)}
 Análisis previo de fuentes=${buildSourceAnalysesText(sourceAnalyses)}
 
 Devuelve exactamente este JSON, sin markdown. Mantén la estructura y nombres de campos:
@@ -4239,19 +3660,6 @@ function normalizePrediction(rawPrediction, context) {
 function predictionCopiedChampionshipStandings(prediction) {
   return (prediction.warnings || []).some((warning) =>
     warning.includes("mismo orden que la clasificación actual"),
-  );
-}
-
-function predictionCopiedLastRace(prediction) {
-  return (prediction.warnings || []).some((warning) =>
-    warning.includes("mismo orden que la última carrera"),
-  );
-}
-
-function predictionCopiedKnownOrder(prediction) {
-  return (
-    predictionCopiedChampionshipStandings(prediction) ||
-    predictionCopiedLastRace(prediction)
   );
 }
 
@@ -4403,14 +3811,6 @@ async function buildContext(circuit) {
 }
 
 async function generatePrediction(context) {
-  if (MANUAL_PREDICTION_FILE) {
-    console.log(`\nUsando predicción manual: ${MANUAL_PREDICTION_FILE}\n`);
-    const rawPrediction = JSON.parse(
-      fs.readFileSync(MANUAL_PREDICTION_FILE, "utf8"),
-    );
-    return normalizePrediction(rawPrediction, context);
-  }
-
   context.sourceAnalyses = await analyzeSourceChunks(context);
 
   const prompt = buildPrompt(context);
@@ -4433,30 +3833,26 @@ async function generatePrediction(context) {
 
   let retryCount = 0;
 
-  while (predictionCopiedKnownOrder(prediction)) {
+  while (predictionCopiedChampionshipStandings(prediction)) {
     retryCount += 1;
 
-    const copiedSource = predictionCopiedChampionshipStandings(prediction)
-      ? "la clasificación general del campeonato"
-      : "el resultado de la última carrera";
-
     console.log(
-      `OpenRouter ha copiado ${copiedSource}. Reintento correctivo ${retryCount}: pidiendo una predicción específica de este GP basada en circuito, mejoras y datos recientes...\n`,
+      `OpenRouter ha copiado la clasificación general. Reintento correctivo ${retryCount}: pidiendo una predicción basada en carrera, circuito, mejoras y última carrera...\n`,
     );
 
     const retryPrompt = `${prompt}
 
 RESPUESTA ANTERIOR INVÁLIDA:
-El top 10 coincidió con ${copiedSource}. Eso es un dato de entrada, no una predicción.
-Este es el reintento correctivo número ${retryCount}. Debes cambiar el orden respecto a la clasificación general y respecto a la última carrera.
+El top 10 coincidió con la clasificación general del campeonato. No repitas esa tabla.
+Este es el reintento correctivo número ${retryCount}. Debes cambiar el orden respecto a la clasificación general.
 Genera una predicción nueva específica de este GP usando:
 - rendimiento esperado de cada coche en este tipo de circuito,
 - actualizaciones detectadas en FIA/noticias y si encajan con el circuito,
-- señales de ritmo reciente (sin copiar el orden de llegada de la última carrera),
+- última carrera y evolución reciente de ritmo,
 - degradación, neumáticos, clima y estrategia,
 - parrilla estimada, facilidad de adelantamiento y ritmo de carrera.
 No basta con intercambiar dos pilotos: reconstruye el orden desde cero usando rendimiento de coches, mejoras y características del circuito.
-El top 10 NO puede ser una copia literal de la clasificación general ni de la última carrera. Responde solo el JSON válido completo con el mismo formato.`;
+El top 10 NO puede ser una copia literal de la clasificación general. Responde solo el JSON válido completo con el mismo formato.`;
 
     const retryStart = Date.now();
     const retryResponse = await askOpenRouter(retryPrompt);
@@ -4846,7 +4242,6 @@ async function submitBet(page) {
     hasText: "Enviar Apuesta",
   });
 
-  terminalLog("📤 Buscando botón 'Enviar Apuesta'...");
   await submitButton.waitFor({ state: "visible", timeout: 10000 });
   await page.waitForFunction(
     () => {
@@ -4863,11 +4258,10 @@ async function submitBet(page) {
     { timeout: 10000 },
   );
 
-  terminalLog("🎯 Haciendo clic en 'Enviar Apuesta'...");
   await submitButton.click();
   await page.waitForLoadState("networkidle").catch(() => {});
 
-  terminalLog("✅ ¡Apuesta enviada correctamente!\n");
+  console.log("Apuesta enviada.\n");
 }
 
 async function keepBrowserOpenUntilInterrupt(browser, message) {
@@ -4890,20 +4284,16 @@ async function loginToFantasyF1(prediction) {
   const webPassword = process.env.WEB_PASSWORD;
 
   if (!webUser || !webPassword || !FANTASY_LOGIN_URL) {
-    terminalLog(
-      "\n⚠️  Faltan WEB_USER, WEB_PASSWORD o FANTASY_LOGIN_URL en .env. Saltando login.\n",
+    console.log(
+      "\nFaltan WEB_USER, WEB_PASSWORD o FANTASY_LOGIN_URL en .env. Saltando login.\n",
     );
     return;
   }
 
-  terminalLog("\n🌐 Abriendo navegador...");
-  terminalLog(`📍 URL de login: ${FANTASY_LOGIN_URL}`);
-  terminalLog(`👤 Usuario: ${webUser}\n`);
+  console.log("\nIniciando sesión en Fantasy F1...\n");
 
   const browser = await chromium.launch({ headless: false }); // headless: false para mostrar en pantalla
   const page = await browser.newPage();
-
-  terminalLog("✅ Navegador abierto correctamente\n");
 
   try {
     await page.goto(FANTASY_LOGIN_URL);
@@ -4912,10 +4302,7 @@ async function loginToFantasyF1(prediction) {
     await page.waitForLoadState("networkidle");
 
     // Llenar el formulario con los selectores reales
-    terminalLog("📝 Rellenando usuario...");
     await page.fill('input[formcontrolname="usuario"]', webUser);
-
-    terminalLog("🔐 Rellenando contraseña...");
     await page.fill('input[formcontrolname="password"]', webPassword);
 
     const loginButton = page.locator('button[type="submit"]');
@@ -4932,13 +4319,12 @@ async function loginToFantasyF1(prediction) {
     );
 
     // Hacer clic en el botón de login
-    terminalLog("🔘 Haciendo clic en login...");
     await loginButton.click();
 
     await page.waitForLoadState("networkidle");
 
-    terminalLog(
-      "✅ Sesión iniciada exitosamente. El navegador se mantendrá abierto.\n",
+    console.log(
+      "Sesión iniciada exitosamente. El navegador se mantendrá abierto.\n",
     );
 
     // Navegar al enlace de apuestas
@@ -4948,14 +4334,14 @@ async function loginToFantasyF1(prediction) {
       .first();
 
     await apuestasLink.waitFor({ state: "visible", timeout: 20000 });
-    terminalLog("🎯 Navegando a la página de Apuestas...");
     await apuestasLink.click();
 
     await page.waitForURL(/\/apuestas/, { timeout: 20000 });
 
+    console.log("Navegando a Apuestas...\n");
+
     // Esperar a que carguen los elementos de la página
     await page.waitForLoadState("networkidle");
-    terminalLog("✅ Página de Apuestas cargada\n");
 
     await clearCurrentSelection(page);
 
@@ -4963,20 +4349,20 @@ async function loginToFantasyF1(prediction) {
 
     if (sessionUser) {
       prediction.jugador = sessionUser;
-      terminalLog(
-        `👥 Jugador cargado desde sessionStorage: ${sessionUser.nombre}\n`,
+      console.log(
+        `Jugador cargado desde sessionStorage.usuarioSeleccionado: ${sessionUser.nombre}\n`,
       );
     }
 
     const detectedPlusDriver = await readPlusDriverFromPage(page, prediction);
 
     if (detectedPlusDriver) {
-      terminalLog(
-        `⭐ Piloto + leído después de limpiar selección: ${detectedPlusDriver}\n`,
+      console.log(
+        `Piloto + leído después de limpiar selección: ${detectedPlusDriver}\n`,
       );
     } else {
-      terminalLog(
-        "⚠️  No se pudo leer el piloto + justo después de limpiar selección; se reintentará antes de rellenar.\n",
+      console.log(
+        "No se pudo leer el piloto + justo después de limpiar selección; se reintentará antes de rellenar.\n",
       );
     }
 
@@ -4987,7 +4373,6 @@ async function loginToFantasyF1(prediction) {
       Array.isArray(prediction.ordenPilotosPuntos)
     ) {
       const top10ForPoints = prediction.ordenPilotosPuntos.slice(0, 10);
-      terminalLog(`🏁 Seleccionando top 10 pilotos para puntos...`);
 
       // Obtener el contenedor de scroll
       const scrollContainer = page
@@ -5025,21 +4410,19 @@ async function loginToFantasyF1(prediction) {
           // Hacer clic en el card
           await card.click();
           await page.waitForTimeout(500);
-          terminalLog(`  ✓ ${i + 1}/10 - ${piloto.nombre}`);
         } catch (e) {
           // Se mantiene el terminal limpio; si falla, el flujo continuará con el resto.
-          terminalLog(`  ✗ Error seleccionando ${piloto.nombre}: ${e.message}`);
         }
       }
 
-      terminalLog(
-        "\n✅ Selecciones de pilotos completadas. Rellenando resto de datos...\n",
+      console.log(
+        "Login y selecciones completados. Presiona Ctrl+C para cerrar.",
       );
     }
 
-    terminalLog("Rellenando el resto de la apuesta...\n");
+    console.log("Rellenando el resto de la apuesta...\n");
     await fillFullBetPage(page, prediction, detectedPlusDriver);
-    terminalLog("Toda la página de apuesta queda rellenada.\n");
+    console.log("Toda la página de apuesta queda rellenada.\n");
     await submitBet(page);
 
     await keepBrowserOpenUntilInterrupt(
@@ -5047,8 +4430,7 @@ async function loginToFantasyF1(prediction) {
       "Navegador abierto. Presiona Ctrl+C para cerrar.",
     );
   } catch (error) {
-    terminalLog("\n❌ Error al iniciar sesión o rellenar apuesta:");
-    terminalLog(`   ${error.message}\n`);
+    console.error("Error al iniciar sesión:", error.message);
     await keepBrowserOpenUntilInterrupt(
       browser,
       "El navegador queda abierto para revisar el fallo. Presiona Ctrl+C para cerrar.",
@@ -5059,31 +4441,29 @@ async function loginToFantasyF1(prediction) {
 async function main() {
   const circuit = getCircuitFromArgs();
 
-  terminalLog(`\n🏎️  Generando estimación para: ${circuit}\n`);
+  console.log(`\nGenerando estimación para: ${circuit}\n`);
 
   const context = await buildContext(circuit);
 
-  terminalLog("📊 Leyendo usuario de FantasyF1 desde sessionStorage...\n");
+  console.log("\nLeyendo usuario de FantasyF1 desde sessionStorage...\n");
   const fantasySession = await getFantasySessionData(context);
   context.fantasyUser = fantasySession.user;
   context.fantasyDrivers = fantasySession.drivers;
 
   if (context.fantasyUser) {
-    terminalLog(`👥 Usuario FantasyF1: ${context.fantasyUser.nombre}\n`);
+    console.log(`Usuario FantasyF1: ${context.fantasyUser.nombre}\n`);
   } else {
-    terminalLog("⚠️  No se pudo leer usuarioSeleccionado; se usará fallback.\n");
+    console.log("No se pudo leer usuarioSeleccionado; se usará fallback.\n");
   }
 
   if (context.fantasyDrivers.length) {
-    terminalLog(
-      `✅ Pilotos disponibles en FantasyF1: ${context.fantasyDrivers.length}\n`,
+    console.log(
+      `Pilotos disponibles en FantasyF1: ${context.fantasyDrivers.length}\n`,
     );
   }
 
-  terminalLog("🤖 Generando predicción con IA...\n");
   const prediction = await generatePrediction(context);
 
-  terminalLog("\n📋 PREDICCIÓN GENERADA:\n");
   printPrediction(prediction);
 
   await loginToFantasyF1(prediction);
