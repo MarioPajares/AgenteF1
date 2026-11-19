@@ -10,6 +10,12 @@ La aplicacion se ejecuta indicando el circuito o Gran Premio:
 node index.js "Barcelona"
 ```
 
+Si no se indica circuito (o se pasa `--next`), el script consulta el calendario y usa el proximo Gran Premio, siempre que se dispute en los proximos 4 dias (`MAX_DAYS_TO_RACE`). Si no hay GP ese fin de semana, termina sin hacer nada:
+
+```bash
+node index.js
+```
+
 El flujo principal es:
 
 1. Lee el circuito recibido por argumentos.
@@ -18,14 +24,25 @@ El flujo principal es:
 4. Si hay credenciales de las carreras de F1, abre la pagina privada con Playwright para leer usuario y pilotos disponibles.
 5. Envia el contexto a OpenRouter para generar una prediccion en JSON.
 6. Normaliza la respuesta para evitar pilotos duplicados, equipos tratados como pilotos y clasificaciones copiadas del campeonato.
-7. Muestra por terminal solo la parrilla prevista de 22 pilotos.
+7. Muestra un mensaje con el top 10 previsto en carrera, el piloto de la pole (con tiempo) y la vuelta rapida en carrera.
 8. Si hay credenciales y URL privada configuradas, abre el navegador y rellena la apuesta.
 
-Por defecto el terminal queda en modo limpio y solo imprime la parrilla prevista. Para ver logs de depuracion, configura:
+Por defecto el terminal queda en modo limpio y solo imprime el mensaje de prediccion. Para ver logs de depuracion, configura:
 
 ```env
 OUTPUT_ONLY_GRID=0
 ```
+
+## Prediccion automatica cada jueves
+
+El workflow `.github/workflows/prediccion-semanal.yml` se ejecuta cada jueves a las 08:17 UTC en GitHub Actions. Detecta el GP del fin de semana, genera la parrilla, rellena la apuesta (si hay credenciales) y deja la prediccion en el resumen del run y como artefacto. Las semanas sin carrera termina sin hacer nada. Tambien se puede lanzar a mano desde la pestana Actions ("Run workflow"), opcionalmente indicando el circuito.
+
+En modo desatendido (`CI=true` o `UNATTENDED=1`) el navegador va en headless y se cierra solo al terminar.
+
+Configura en GitHub (Settings > Secrets and variables > Actions):
+
+- Secrets: `OPENROUTER_API_KEY`, `WEB_USER`, `WEB_PASSWORD`, `FANTASY_LOGIN_URL`, `FANTASY_PLAYER_ID`, `FANTASY_PLAYER_NAME`, `FANTASY_LEAGUE_ID`.
+- Variables (opcionales): `OPENROUTER_MODEL`, `OPENROUTER_MAX_TOKENS`, `FANTASY_PLAYER_ROLE`, `FANTASY_PLAYER_COLOR`, `FANTASY_RACE_ID`.
 
 ## Configuracion local
 
@@ -55,13 +72,18 @@ Estas variables se configuran en `.env`:
 
 ## Salida esperada
 
-En modo limpio, la salida por terminal tiene este formato:
+En modo limpio, la salida por terminal es un mensaje listo para compartir:
 
 ```text
-1. Piloto
-2. Piloto
+🏁 Prediccion F1 - Las Vegas Grand Prix (2026-11-21)
+
+🏆 Top 10 en carrera:
+1. Piloto (Escuderia)
 ...
-22. Piloto
+10. Piloto (Escuderia)
+
+⏱️ Pole: Piloto (Escuderia) - 1:32.512
+🟣 Vuelta rapida en carrera: Piloto (Escuderia)
 ```
 
 ## Seguridad

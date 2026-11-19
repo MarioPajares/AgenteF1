@@ -7,6 +7,8 @@ const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL || "openrouter/free";
 const FANTASY_LOGIN_URL = process.env.FANTASY_LOGIN_URL || "";
 const terminalLog = console.log.bind(console);
 const OUTPUT_ONLY_GRID = process.env.OUTPUT_ONLY_GRID !== "0";
+// Modo desatendido (GitHub Actions / cron): navegador headless y cierre automatico.
+const UNATTENDED = process.env.CI === "true" || process.env.UNATTENDED === "1";
 
 if (OUTPUT_ONLY_GRID) {
   console.log = () => {};
@@ -709,6 +711,10 @@ function sleep(ms) {
 
 function getCircuitFromArgs() {
   const circuit = process.argv.slice(2).join(" ").trim();
+
+  if (!circuit || circuit === "--next") {
+    return null;
+  }
 
   if (!circuit) {
     throw new Error(
@@ -3738,12 +3744,35 @@ function printFiaDocuments(fiaDocuments) {
   });
 }
 
-function printPrediction(prediction) {
-  prediction.previsionParrillaSalida.slice(0, MAX_GRID_DRIVERS).forEach((item, index) => {
-    const position = item.posicion || index + 1;
+function formatDriverLabel(driver) {
+  if (!driver?.nombre) {
+    return "Sin prediccion";
+  }
 
-    terminalLog(`${position}. ${item.piloto.nombre}`);
-  });
+  const team = driver.escuderia?.nombre;
+  return team ? `${driver.nombre} (${team})` : driver.nombre;
+}
+
+function buildPredictionMessage(prediction, raceLabel) {
+  const top10 = (prediction.previsionCarreraCompleta || [])
+    .slice(0, 10)
+    .map((item, index) => `${item.posicion || index + 1}. ${formatDriverLabel(item.piloto)}`);
+
+  const poleTime = prediction.tiempoPole ? ` - ${prediction.tiempoPole}` : "";
+
+  return [
+    `🏁 Prediccion F1${raceLabel ? ` - ${raceLabel}` : ""}`,
+    "",
+    "🏆 Top 10 en carrera:",
+    ...top10,
+    "",
+    `⏱️ Pole: ${formatDriverLabel(prediction.pilotoPole)}${poleTime}`,
+    `🟣 Vuelta rapida en carrera: ${formatDriverLabel(prediction.pilotoVueltaRapida)}`,
+  ].join("\n");
+}
+
+function printPrediction(prediction, raceLabel) {
+  terminalLog(buildPredictionMessage(prediction, raceLabel));
 }
 
 async function buildContext(circuit) {
@@ -4265,6 +4294,11 @@ async function submitBet(page) {
 }
 
 async function keepBrowserOpenUntilInterrupt(browser, message) {
+  if (UNATTENDED) {
+    await browser.close();
+    return;
+  }
+
   console.log(message);
 
   const keepAliveTimer = setInterval(() => {}, 1000);
@@ -4292,7 +4326,7 @@ async function loginToFantasyF1(prediction) {
 
   console.log("\nIniciando sesión en Fantasy F1...\n");
 
-  const browser = await chromium.launch({ headless: false }); // headless: false para mostrar en pantalla
+  const browser = await chromium.launch({ headless: UNATTENDED }); // visible en local, headless en modo desatendido
   const page = await browser.newPage();
 
   try {
@@ -4431,6 +4465,7 @@ async function loginToFantasyF1(prediction) {
     );
   } catch (error) {
     console.error("Error al iniciar sesión:", error.message);
+    process.exitCode = 1;
     await keepBrowserOpenUntilInterrupt(
       browser,
       "El navegador queda abierto para revisar el fallo. Presiona Ctrl+C para cerrar.",
@@ -4438,8 +4473,50 @@ async function loginToFantasyF1(prediction) {
   }
 }
 
+// Devuelve el proximo GP del calendario si se disputa en los proximos `maxDays` dias.
+async function getUpcomingRace(maxDays = 4) {
+  const data = await fetchJson(`${JOLPICA_BASE_URL}/current/next.json`);
+  const race = data?.MRData?.RaceTable?.Races?.[0];
+
+  if (!race) {
+    return null;
+  }
+
+  const raceDate = new Date(`${race.date}T${race.time || "12:00:00Z"}`);
+  const daysUntilRace = (raceDate - Date.now()) / 86400000;
+
+  if (daysUntilRace < 0 || daysUntilRace > maxDays) {
+    return null;
+  }
+
+  // Elegimos el nombre que case con un perfil conocido de circuito.
+  const candidates = [
+    race.raceName,
+    race.Circuit?.circuitName,
+    race.Circuit?.Location?.locality,
+  ].filter(Boolean);
+  const circuit =
+    candidates.find((name) => getCircuitProfile(name).type !== "general") ||
+    race.raceName;
+
+  return { name: race.raceName, circuit, date: race.date };
+}
+
 async function main() {
-  const circuit = getCircuitFromArgs();
+  let circuit = getCircuitFromArgs();
+  let raceLabel = circuit;
+
+  if (!circuit) {
+    const race = await getUpcomingRace(Number(process.env.MAX_DAYS_TO_RACE) || 4);
+
+    if (!race) {
+      terminalLog("No hay Gran Premio este fin de semana. Nada que predecir.");
+      return;
+    }
+
+    circuit = race.circuit;
+    raceLabel = `${race.name} (${race.date})`;
+  }
 
   console.log(`\nGenerando estimación para: ${circuit}\n`);
 
@@ -4464,7 +4541,7 @@ async function main() {
 
   const prediction = await generatePrediction(context);
 
-  printPrediction(prediction);
+  printPrediction(prediction, raceLabel);
 
   await loginToFantasyF1(prediction);
 }
@@ -4472,4 +4549,5 @@ async function main() {
 main().catch((error) => {
   console.error("\nError:\n");
   console.error(error.message);
+  process.exitCode = 1;
 });
