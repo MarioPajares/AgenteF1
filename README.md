@@ -86,6 +86,15 @@ En modo limpio, la salida por terminal es un mensaje listo para compartir:
 🟣 Vuelta rapida en carrera: Piloto (Escuderia)
 ```
 
+Si se envia la apuesta, al final se anade la comprobacion de la peticion de red del envio (lo mismo que se ve en F12 > Red):
+
+```text
+✅ Apuesta enviada (HTTP 201, POST /api/apuestas)
+📌 Carrera registrada en la web: Las Vegas, id 7
+```
+
+Si la web rechaza la apuesta o no se detecta el envio, se muestra `❌` y el workflow termina en error, asi GitHub te avisa. `FANTASY_RACE_ID` no se envia a la web: la carrera la decide la propia web al pulsar "Enviar Apuesta".
+
 ## Seguridad
 
 No se debe commitear `.env`. El archivo `.env.example` existe solo como plantilla y no debe contener valores reales.
