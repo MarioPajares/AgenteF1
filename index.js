@@ -4266,6 +4266,42 @@ async function fillFullBetPage(page, prediction, detectedPlusDriver = null) {
   );
 }
 
+// Busca en un objeto (payload o respuesta) los datos de la carrera, como se verian en F12.
+function findRaceInfo(value, depth = 0) {
+  const info = {};
+
+  if (!value || typeof value !== "object" || depth > 4) {
+    return info;
+  }
+
+  for (const [key, child] of Object.entries(value)) {
+    if (/^(idCarrera|carreraId|raceId|idRace)$/i.test(key) && child != null && typeof child !== "object") {
+      info.id ??= String(child);
+    } else if (/^(carrera|race)$/i.test(key) && child && typeof child === "object") {
+      info.id ??= child.id != null ? String(child.id) : undefined;
+      info.name ??= child.nombre || child.name || child.raceName;
+    }
+  }
+
+  for (const child of Object.values(value)) {
+    if (child && typeof child === "object") {
+      const nested = findRaceInfo(child, depth + 1);
+      info.id ??= nested.id;
+      info.name ??= nested.name;
+    }
+  }
+
+  return info;
+}
+
+function parseJsonSafe(text) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
 async function submitBet(page) {
   const submitButton = page.locator("button.submit-btn").filter({
     hasText: "Enviar Apuesta",
@@ -4287,10 +4323,77 @@ async function submitBet(page) {
     { timeout: 10000 },
   );
 
+  // Igual que la pestana Red de F12: capturamos las peticiones que lanza el envio.
+  const captured = [];
+  const onResponse = async (response) => {
+    const request = response.request();
+
+    if (
+      !["xhr", "fetch"].includes(request.resourceType()) ||
+      request.method() === "GET" ||
+      request.method() === "OPTIONS"
+    ) {
+      return;
+    }
+
+    captured.push({
+      method: request.method(),
+      url: request.url(),
+      status: response.status(),
+      payload: parseJsonSafe(request.postData() || ""),
+      body: parseJsonSafe(await response.text().catch(() => "")),
+    });
+  };
+
+  page.on("response", onResponse);
   await submitButton.click();
   await page.waitForLoadState("networkidle").catch(() => {});
+  await page.waitForTimeout(3000);
+  page.off("response", onResponse);
 
-  console.log("Apuesta enviada.\n");
+  const betRequest =
+    captured.find((item) => /apuesta|bet|prediccion/i.test(item.url)) ||
+    captured[captured.length - 1];
+
+  if (!betRequest) {
+    return {
+      ok: false,
+      detail: "No se detecto ninguna peticion de envio de la apuesta.",
+    };
+  }
+
+  const race = {
+    ...findRaceInfo(betRequest.body),
+    ...findRaceInfo(betRequest.payload),
+  };
+  const ok = betRequest.status >= 200 && betRequest.status < 300;
+
+  return {
+    ok,
+    status: betRequest.status,
+    url: `${betRequest.method} ${new URL(betRequest.url).pathname}`,
+    raceId: race.id,
+    raceName: race.name,
+  };
+}
+
+function buildBetCheckMessage(check) {
+  if (!check) {
+    return "";
+  }
+
+  if (!check.status) {
+    return `❌ Apuesta: ${check.detail}`;
+  }
+
+  const raceText = [check.raceName, check.raceId && `id ${check.raceId}`]
+    .filter(Boolean)
+    .join(", ");
+
+  return [
+    `${check.ok ? "✅ Apuesta enviada" : "❌ Apuesta rechazada"} (HTTP ${check.status}, ${check.url})`,
+    raceText ? `📌 Carrera registrada en la web: ${raceText}` : "📌 La web no devolvio el id de carrera",
+  ].join("\n");
 }
 
 async function keepBrowserOpenUntilInterrupt(browser, message) {
@@ -4457,14 +4560,20 @@ async function loginToFantasyF1(prediction) {
     console.log("Rellenando el resto de la apuesta...\n");
     await fillFullBetPage(page, prediction, detectedPlusDriver);
     console.log("Toda la página de apuesta queda rellenada.\n");
-    await submitBet(page);
+    const betCheck = await submitBet(page);
+
+    terminalLog(`\n${buildBetCheckMessage(betCheck)}`);
+
+    if (!betCheck.ok) {
+      process.exitCode = 1;
+    }
 
     await keepBrowserOpenUntilInterrupt(
       browser,
       "Navegador abierto. Presiona Ctrl+C para cerrar.",
     );
   } catch (error) {
-    console.error("Error al iniciar sesión:", error.message);
+    terminalLog(`\n❌ Apuesta no enviada: ${error.message}`);
     process.exitCode = 1;
     await keepBrowserOpenUntilInterrupt(
       browser,
