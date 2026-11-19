@@ -24,10 +24,10 @@ El flujo principal es:
 4. Si hay credenciales de las carreras de F1, abre la pagina privada con Playwright para leer usuario y pilotos disponibles.
 5. Envia el contexto a OpenRouter para generar una prediccion en JSON.
 6. Normaliza la respuesta para evitar pilotos duplicados, equipos tratados como pilotos y clasificaciones copiadas del campeonato.
-7. Muestra por terminal solo la parrilla prevista de 22 pilotos.
+7. Muestra un mensaje con el top 10 previsto en carrera, el piloto de la pole (con tiempo) y la vuelta rapida en carrera.
 8. Si hay credenciales y URL privada configuradas, abre el navegador y rellena la apuesta.
 
-Por defecto el terminal queda en modo limpio y solo imprime la parrilla prevista. Para ver logs de depuracion, configura:
+Por defecto el terminal queda en modo limpio y solo imprime el mensaje de prediccion. Para ver logs de depuracion, configura:
 
 ```env
 OUTPUT_ONLY_GRID=0
@@ -72,13 +72,18 @@ Estas variables se configuran en `.env`:
 
 ## Salida esperada
 
-En modo limpio, la salida por terminal tiene este formato:
+En modo limpio, la salida por terminal es un mensaje listo para compartir:
 
 ```text
-1. Piloto
-2. Piloto
+🏁 Prediccion F1 - Las Vegas Grand Prix (2026-11-21)
+
+🏆 Top 10 en carrera:
+1. Piloto (Escuderia)
 ...
-22. Piloto
+10. Piloto (Escuderia)
+
+⏱️ Pole: Piloto (Escuderia) - 1:32.512
+🟣 Vuelta rapida en carrera: Piloto (Escuderia)
 ```
 
 ## Seguridad

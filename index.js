@@ -3744,12 +3744,35 @@ function printFiaDocuments(fiaDocuments) {
   });
 }
 
-function printPrediction(prediction) {
-  prediction.previsionParrillaSalida.slice(0, MAX_GRID_DRIVERS).forEach((item, index) => {
-    const position = item.posicion || index + 1;
+function formatDriverLabel(driver) {
+  if (!driver?.nombre) {
+    return "Sin prediccion";
+  }
 
-    terminalLog(`${position}. ${item.piloto.nombre}`);
-  });
+  const team = driver.escuderia?.nombre;
+  return team ? `${driver.nombre} (${team})` : driver.nombre;
+}
+
+function buildPredictionMessage(prediction, raceLabel) {
+  const top10 = (prediction.previsionCarreraCompleta || [])
+    .slice(0, 10)
+    .map((item, index) => `${item.posicion || index + 1}. ${formatDriverLabel(item.piloto)}`);
+
+  const poleTime = prediction.tiempoPole ? ` - ${prediction.tiempoPole}` : "";
+
+  return [
+    `🏁 Prediccion F1${raceLabel ? ` - ${raceLabel}` : ""}`,
+    "",
+    "🏆 Top 10 en carrera:",
+    ...top10,
+    "",
+    `⏱️ Pole: ${formatDriverLabel(prediction.pilotoPole)}${poleTime}`,
+    `🟣 Vuelta rapida en carrera: ${formatDriverLabel(prediction.pilotoVueltaRapida)}`,
+  ].join("\n");
+}
+
+function printPrediction(prediction, raceLabel) {
+  terminalLog(buildPredictionMessage(prediction, raceLabel));
 }
 
 async function buildContext(circuit) {
@@ -4481,6 +4504,7 @@ async function getUpcomingRace(maxDays = 4) {
 
 async function main() {
   let circuit = getCircuitFromArgs();
+  let raceLabel = circuit;
 
   if (!circuit) {
     const race = await getUpcomingRace(Number(process.env.MAX_DAYS_TO_RACE) || 4);
@@ -4491,7 +4515,7 @@ async function main() {
     }
 
     circuit = race.circuit;
-    terminalLog(`${race.name} (${race.date}) - ${circuit}\n`);
+    raceLabel = `${race.name} (${race.date})`;
   }
 
   console.log(`\nGenerando estimación para: ${circuit}\n`);
@@ -4517,7 +4541,7 @@ async function main() {
 
   const prediction = await generatePrediction(context);
 
-  printPrediction(prediction);
+  printPrediction(prediction, raceLabel);
 
   await loginToFantasyF1(prediction);
 }
